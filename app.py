@@ -148,7 +148,6 @@ def bfs_search_frames(size, walls, start, goal, diagonal=False):
 def draw_grid(size, walls, result=None, start=(0, 0), goal=None,
               visited=None, frontier=None, current=None):
     goal = goal or (size - 1, size - 1)
-    # 0 free, 1 wall, 2 visited, 3 route, 4 source, 5 goal, 6 frontier, 7 active
     cells = [[0] * size for _ in range(size)]
     for r, c in walls:
         cells[r][c] = 1
@@ -240,7 +239,7 @@ def network_dijkstra(source, target, active_net):
                               "Router": f"{node} → {neighbor}",
                               "Cost": f"{weight:.2f} (total {candidate:.2f})"})
     path = []
-    if distances[target] < float("inf"):
+    if distances.get(target, float("inf")) < float("inf"):
         node = target
         while node is not None:
             path.append(node)
@@ -264,7 +263,7 @@ def network_bellman_ford(source, target, active_net):
     for _ in range(max(0, len(active_net) - 1)):
         changed = False
         for node, neighbors in active_net.items():
-            if distances[node] == float("inf"):
+            if distances.get(node, float("inf")) == float("inf"):
                 continue
             for neighbor, weight in neighbors.items():
                 candidate = distances[node] + weight
@@ -278,7 +277,7 @@ def network_bellman_ford(source, target, active_net):
         if not changed:
             break
     path = []
-    if distances[target] < float("inf"):
+    if distances.get(target, float("inf")) < float("inf"):
         node = target
         while node is not None:
             path.append(node)
@@ -286,13 +285,13 @@ def network_bellman_ford(source, target, active_net):
         path.reverse()
     reached = {node for node, cost in distances.items() if cost < float("inf")}
     table = [{"Router": node,
-              "Distance": "∞" if distances[node] == float("inf") else f"{distances[node]:.2f}",
-              "Next hop": parents[node] or "—",
+              "Distance": "∞" if distances.get(node, float("inf")) == float("inf") else f"{distances[node]:.2f}",
+              "Next hop": parents.get(node) or "—",
               "Status": "Reachable" if node in reached else "Unreachable"}
              for node in active_net]
     return {"source": source, "target": target, "distances": distances,
             "parents": parents, "visited": list(reached), "path": path,
-            "cost": distances[target], "table": table, "trace": trace}
+            "cost": distances.get(target, float("inf")), "table": table, "trace": trace}
 
 
 def draw_network(result, active_net):
@@ -343,7 +342,7 @@ padding:.75rem; border-radius:.7rem; }
 """, unsafe_allow_html=True)
 st.title("🧭 Network Algorithms Lab")
 st.caption("CS402 · ROUTING PROTOCOLS & PATHFINDING")
-grid_tab, network_tab = st.tabs(["▦  Grid Pathfinding", "⌘  Cisco Topology Dijkstra"])
+grid_tab, network_tab = st.tabs(["▦ Grid Pathfinding", "⌘ Cisco Topology & Routing"])
 
 with st.sidebar:
     st.header("Grid simulator")
@@ -414,7 +413,7 @@ with grid_tab:
                                          visited=frame["visited"],
                                          frontier=frame["frontier"],
                                          current=frame["current"]),
-                              use_container_width=True)
+                               use_container_width=True)
             info.caption(f"Expanded {len(frame['visited'])} cells · current frontier {len(frame['frontier'])} · peak queue size {frame['max_queue']}")
             if animate_delay:
                 sleep(animate_delay)
