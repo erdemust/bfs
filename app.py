@@ -88,10 +88,10 @@ def grid_search(size, walls, start, goal, algorithm="BFS", diagonal=False):
                 parents[nxt] = current
                 distances[nxt] = tentative
                 serial += 1
-                if algorithm == "Greedy":
-                    score = heuristic(nxt)
-                elif algorithm == "A*":
+                if algorithm == "A*":
                     score = tentative + heuristic(nxt)
+                elif algorithm == "Greedy":
+                    score = heuristic(nxt)
                 else:  # Dijkstra
                     score = tentative
                 heappush(frontier, (score, serial, nxt))
@@ -148,6 +148,7 @@ def bfs_search_frames(size, walls, start, goal, diagonal=False):
 def draw_grid(size, walls, result=None, start=(0, 0), goal=None,
               visited=None, frontier=None, current=None):
     goal = goal or (size - 1, size - 1)
+    # 0 free, 1 wall, 2 visited, 3 route, 4 source, 5 goal, 6 frontier, 7 active
     cells = [[0] * size for _ in range(size)]
     for r, c in walls:
         cells[r][c] = 1
@@ -181,7 +182,7 @@ def draw_grid(size, walls, result=None, start=(0, 0), goal=None,
 
 
 # ---------------------------------------------------------------------------
-# Cisco-style weighted topology & routing protocols
+# Cisco-style weighted topology
 # ---------------------------------------------------------------------------
 NETWORK = {
     "START": {"A": 2.0, "E": 6.0, "D": 8.0},
@@ -200,23 +201,36 @@ NODE_POS = {
 }
 
 
-def network_dijkstra(source, target):
-    distances = {node: float("inf") for node in NETWORK}
-    parents = {node: None for node in NETWORK}
+def get_active_network(overrides):
+    """Apply user-selected failures and congestion to the base topology."""
+    active = {}
+    for node, neighbors in NETWORK.items():
+        active[node] = {}
+        for neighbor, weight in neighbors.items():
+            state = overrides.get(f"{node} → {neighbor}", "Normal")
+            if state == "Failed":
+                continue
+            active[node][neighbor] = weight * (5 if state == "Congested (5x)" else 1)
+    return active
+
+
+def network_dijkstra(source, target, active_net):
+    distances = {node: float("inf") for node in active_net}
+    parents = {node: None for node in active_net}
     distances[source] = 0.0
     queue = [(0.0, source)]
     visited = []
     trace = []
     while queue:
         cost, node = heappop(queue)
-        if node in visited or cost != distances[node]:
+        if node in visited or cost != distances.get(node, float("inf")):
             continue
         visited.append(node)
         trace.append({"Step": len(trace) + 1, "Event": "Process router",
                       "Router": node, "Cost": f"{cost:.2f}"})
         if node == target:
             break
-        for neighbor, weight in NETWORK[node].items():
+        for neighbor, weight in active_net.get(node, {}).items():
             candidate = cost + weight
             if candidate < distances[neighbor]:
                 distances[neighbor] = candidate
@@ -233,39 +247,36 @@ def network_dijkstra(source, target):
             node = parents[node]
         path.reverse()
     table = [{"Router": node,
-              "Distance": "∞" if distances[node] == float("inf") else f"{distances[node]:.2f}",
-              "Next hop": parents[node] or "—",
+              "Distance": "∞" if distances.get(node, float("inf")) == float("inf") else f"{distances[node]:.2f}",
+              "Next hop": parents.get(node) or "—",
               "Status": "Visited" if node in visited else "Unvisited"}
-             for node in NETWORK]
+             for node in active_net]
     return {"source": source, "target": target, "distances": distances,
             "parents": parents, "visited": visited, "path": path,
-            "cost": distances[target], "table": table, "trace": trace}
+            "cost": distances.get(target, float("inf")), "table": table, "trace": trace}
 
 
-def network_bellman_ford(source, target):
-    distances = {node: float("inf") for node in NETWORK}
-    parents = {node: None for node in NETWORK}
+def network_bellman_ford(source, target, active_net):
+    distances = {node: float("inf") for node in active_net}
+    parents = {node: None for node in active_net}
     distances[source] = 0.0
     trace = []
-    nodes = list(NETWORK.keys())
-    
-    for _ in range(len(nodes) - 1):
-        updated = False
-        for node in NETWORK:
+    for _ in range(max(0, len(active_net) - 1)):
+        changed = False
+        for node, neighbors in active_net.items():
             if distances[node] == float("inf"):
                 continue
-            for neighbor, weight in NETWORK[node].items():
+            for neighbor, weight in neighbors.items():
                 candidate = distances[node] + weight
                 if candidate < distances[neighbor]:
                     distances[neighbor] = candidate
                     parents[neighbor] = node
-                    updated = True
+                    changed = True
                     trace.append({"Step": len(trace) + 1, "Event": "Relax link",
                                   "Router": f"{node} → {neighbor}",
                                   "Cost": f"{weight:.2f} (total {candidate:.2f})"})
-        if not updated:
+        if not changed:
             break
-
     path = []
     if distances[target] < float("inf"):
         node = target
@@ -273,33 +284,37 @@ def network_bellman_ford(source, target):
             path.append(node)
             node = parents[node]
         path.reverse()
-
+    reached = {node for node, cost in distances.items() if cost < float("inf")}
     table = [{"Router": node,
               "Distance": "∞" if distances[node] == float("inf") else f"{distances[node]:.2f}",
               "Next hop": parents[node] or "—",
-              "Status": "Reachable" if distances[node] != float("inf") else "Unreachable"}
-             for node in NETWORK]
-             
-    visited_nodes = [n for n in NETWORK if distances[n] < float("inf")]
+              "Status": "Reachable" if node in reached else "Unreachable"}
+             for node in active_net]
     return {"source": source, "target": target, "distances": distances,
-            "parents": parents, "visited": visited_nodes, "path": path,
+            "parents": parents, "visited": list(reached), "path": path,
             "cost": distances[target], "table": table, "trace": trace}
 
 
-def draw_network(result):
+def draw_network(result, active_net):
     fig, ax = plt.subplots(figsize=(10, 5.8), facecolor="#080e18")
     ax.set_facecolor("#080e18")
     route_edges = set(zip(result["path"], result["path"][1:]))
     for node, neighbors in NETWORK.items():
         x1, y1 = NODE_POS[node]
-        for neighbor, weight in neighbors.items():
+        for neighbor, base_weight in neighbors.items():
             x2, y2 = NODE_POS[neighbor]
             hot = (node, neighbor) in route_edges
+            is_active = neighbor in active_net.get(node, {})
+            weight = active_net.get(node, {}).get(neighbor, base_weight)
+            color = "#00bceb" if hot else ("#334155" if is_active else "#64748b")
             ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
-                        arrowprops={"arrowstyle": "->", "color": "#00bceb" if hot else "#334155",
+                        arrowprops={"arrowstyle": "->", "color": color,
+                                    "linestyle": "-" if is_active else ":",
                                     "lw": 2.8 if hot else 1.1, "shrinkA": 18, "shrinkB": 18})
-            ax.text((x1 + x2) / 2, (y1 + y2) / 2 + .025, f"{weight:g}",
-                    color="#fbbf24", fontsize=8, ha="center",
+            label = (f"{weight:g}" if weight == base_weight else f"{weight:g} (5x)") if is_active else "FAILED"
+            label_color = "#fbbf24" if weight == base_weight else ("#f43f5e" if is_active else "#94a3b8")
+            ax.text((x1 + x2) / 2, (y1 + y2) / 2 + .025, label,
+                    color=label_color, fontsize=8, ha="center",
                     bbox={"facecolor": "#080e18", "edgecolor": "none", "pad": 1})
     for node, (x, y) in NODE_POS.items():
         color = "#10b981" if node == result["source"] else "#f43f5e" if node == result["target"] else "#00bceb"
@@ -328,7 +343,7 @@ padding:.75rem; border-radius:.7rem; }
 """, unsafe_allow_html=True)
 st.title("🧭 Network Algorithms Lab")
 st.caption("CS402 · ROUTING PROTOCOLS & PATHFINDING")
-grid_tab, network_tab = st.tabs(["▦  Grid Pathfinding", "⌘  Cisco Topology & Routing"])
+grid_tab, network_tab = st.tabs(["▦  Grid Pathfinding", "⌘  Cisco Topology Dijkstra"])
 
 with st.sidebar:
     st.header("Grid simulator")
@@ -362,7 +377,6 @@ if signature != st.session_state.signature or randomize:
     st.session_state.search_result = None
 walls = st.session_state.walls
 start, goal = st.session_state.start, st.session_state.goal
-
 if apply_edit:
     point = (int(edit_r), int(edit_c))
     if edit_tool == "Source" and point != goal:
@@ -379,7 +393,6 @@ if apply_edit:
         st.warning("Source and goal must occupy different cells.")
     st.session_state.search_result = None
     start, goal = st.session_state.start, st.session_state.goal
-
 if clear_walls:
     walls.clear()
     st.session_state.search_result = None
@@ -389,7 +402,7 @@ if run_search:
 
 with grid_tab:
     st.subheader("Grid Search Engine")
-    st.caption("BFS, Dijkstra, A*, and Greedy Search through an editable obstacle grid.")
+    st.caption("BFS wavefront and heuristic search through an editable obstacle grid.")
     if run_bfs_demo:
         st.markdown("#### BFS frontier walkthrough")
         placeholder = st.empty()
@@ -401,7 +414,7 @@ with grid_tab:
                                          visited=frame["visited"],
                                          frontier=frame["frontier"],
                                          current=frame["current"]),
-                               use_container_width=True)
+                              use_container_width=True)
             info.caption(f"Expanded {len(frame['visited'])} cells · current frontier {len(frame['frontier'])} · peak queue size {frame['max_queue']}")
             if animate_delay:
                 sleep(animate_delay)
@@ -434,13 +447,15 @@ with grid_tab:
 
     with st.expander("How search algorithms compare"):
         st.markdown("""
-        - **BFS**: Explores layer by layer. Guarantees fewest moves in unweighted grids.
-        - **Dijkstra**: Guaranteed shortest path based on actual edge weights.
-        - **A***: Uses Dijkstra cost plus a heuristic distance to goal for directed efficiency.
-        - **Greedy Best-First**: Uses heuristic distance exclusively. Fast, but does not guarantee the shortest path.
+- **BFS**: Explores layer by layer and finds the fewest moves on an unweighted grid.
+- **Dijkstra**: Finds a minimum-cost route using movement costs.
+- **A***: Uses path cost plus a distance heuristic to guide the search toward the goal.
+- **Greedy Best-First**: Uses only the heuristic. It can be faster, but does not guarantee the lowest-cost route.
+
+BFS uses a first-in, first-out queue. Its queue has no fixed capacity; the walkthrough reports the peak reached on the current map. Runtime and memory are **O(V + E)**.
         """)
 
-    with st.expander("Benchmark grid algorithms"):
+    with st.expander("Benchmark BFS, Dijkstra, and A*"):
         if st.button("Run benchmark on current map", key="run_benchmark"):
             benchmark_rows = []
             for name in ("BFS", "Dijkstra", "A*", "Greedy"):
@@ -456,39 +471,58 @@ with grid_tab:
 
 with network_tab:
     st.subheader("Cisco-style weighted topology")
-    st.caption("Simulate shortest-path routing over weighted router links using Dijkstra or Bellman-Ford.")
+    st.caption("Simulate shortest-path routing over weighted router links with live link failures and congestion.")
     nodes = list(NETWORK)
-    ctrl_cols = st.columns([1, 1, 1, 1])
-    with ctrl_cols[0]:
+    with st.expander("🛠️ Interactive Link Congestion & Failure Simulator", expanded=True):
+        all_links = [f"{router} → {neighbor}"
+                     for router, neighbors in NETWORK.items() for neighbor in neighbors]
+        failure_col, congestion_col = st.columns(2)
+        with failure_col:
+            failed_links = st.multiselect(
+                "Simulate link failures (infinite cost)", all_links, key="failed_links_ui"
+            )
+        with congestion_col:
+            congested_links = st.multiselect(
+                "Simulate congestion (5× weight)", all_links, key="congested_links_ui"
+            )
+        st.session_state.link_overrides = {
+            link: ("Failed" if link in failed_links else
+                   "Congested (5x)" if link in congested_links else "Normal")
+            for link in all_links
+        }
+
+    active_net = get_active_network(st.session_state.link_overrides)
+    control_cols = st.columns([1, 1, 1, 1])
+    with control_cols[0]:
         source = st.selectbox("Source router", nodes, index=0, key="network_source")
-    with ctrl_cols[1]:
+    with control_cols[1]:
         destination = st.selectbox("Destination router", nodes, index=6, key="network_target")
-    with ctrl_cols[2]:
-        net_algo = st.selectbox("Routing Protocol", ["Dijkstra (SPF)", "Bellman-Ford"])
-    with ctrl_cols[3]:
+    with control_cols[2]:
+        route_algorithm = st.selectbox("Routing protocol", ["Dijkstra (SPF)", "Bellman–Ford"])
+    with control_cols[3]:
         st.write("")
-        run_spf = st.button("▶ Run Route Calculation", type="primary", use_container_width=True)
-
-    selected_pair = (source, destination, net_algo)
-    if (run_spf or "network_result" not in st.session_state
-            or st.session_state.get("network_pair") != selected_pair):
-        if net_algo == "Dijkstra (SPF)":
-            st.session_state.network_result = network_dijkstra(source, destination)
+        run_spf = st.button("▶ Run route calculation", type="primary", use_container_width=True)
+    calc_key = (source, destination, route_algorithm,
+                tuple(sorted(st.session_state.link_overrides.items())))
+    if run_spf or "network_result" not in st.session_state or st.session_state.get("network_calc_key") != calc_key:
+        if route_algorithm == "Dijkstra (SPF)":
+            st.session_state.network_result = network_dijkstra(source, destination, active_net)
         else:
-            st.session_state.network_result = network_bellman_ford(source, destination)
-        st.session_state.network_pair = selected_pair
-
+            st.session_state.network_result = network_bellman_ford(source, destination, active_net)
+        st.session_state.network_calc_key = calc_key
     network_result = st.session_state.network_result
     graph_col, table_col = st.columns([1.8, 1])
     with graph_col:
-        st.pyplot(draw_network(network_result), use_container_width=True)
+        st.pyplot(draw_network(network_result, active_net), use_container_width=True)
     with table_col:
         st.markdown("#### Routing table")
         st.dataframe(network_result["table"], hide_index=True, use_container_width=True)
         if network_result["path"]:
             st.success("Shortest route: " + " → ".join(network_result["path"]))
             st.metric("Total link cost", f"{network_result['cost']:.2f}")
-        st.markdown("#### Processing order / Reachable")
+        else:
+            st.warning("No route is available with the current link conditions.")
+        st.markdown("#### SPF processing order")
         st.write(" → ".join(network_result["visited"]))
     with st.expander("Protocol relaxation trace"):
         st.dataframe(network_result["trace"], hide_index=True, use_container_width=True)
