@@ -10,8 +10,6 @@ from math import sqrt
 from random import Random
 from time import perf_counter, sleep
 
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
 import streamlit as st
 
 
@@ -148,6 +146,7 @@ def bfs_search_frames(size, walls, start, goal, diagonal=False):
 def draw_grid(size, walls, result=None, start=(0, 0), goal=None,
               visited=None, frontier=None, current=None):
     goal = goal or (size - 1, size - 1)
+    # 0 free, 1 wall, 2 visited, 3 route, 4 source, 5 goal, 6 frontier, 7 active
     cells = [[0] * size for _ in range(size)]
     for r, c in walls:
         cells[r][c] = 1
@@ -166,18 +165,26 @@ def draw_grid(size, walls, result=None, start=(0, 0), goal=None,
         cells[current[0]][current[1]] = 7
     cells[start[0]][start[1]] = 4
     cells[goal[0]][goal[1]] = 5
-    fig, ax = plt.subplots(figsize=(min(11, size * .32), min(8, size * .32)))
-    ax.imshow(cells, cmap=ListedColormap([
-        "#f1f5f9", "#202938", "#83b6e8", "#fbbf24", "#10b981",
-        "#f43f5e", "#bfdbfe", "#00bceb"
-    ]), vmin=0, vmax=7)
-    ax.set_xticks([x - .5 for x in range(1, size)], minor=True)
-    ax.set_yticks([y - .5 for y in range(1, size)], minor=True)
-    ax.grid(which="minor", color="#cbd5e1", linewidth=.45)
-    ax.tick_params(which="both", bottom=False, left=False,
-                   labelbottom=False, labelleft=False)
-    fig.tight_layout(pad=.1)
-    return fig
+    colors = ["#f1f5f9", "#202938", "#83b6e8", "#fbbf24",
+              "#10b981", "#f43f5e", "#bfdbfe", "#00bceb"]
+    cell, gap = 16, 1
+    board = size * (cell + gap)
+    rects = []
+    for r, row in enumerate(cells):
+        for c, value in enumerate(row):
+            x, y = c * (cell + gap), r * (cell + gap)
+            border = "#64748b" if value in (0, 1) else "#0f172a"
+            rects.append(f'<rect x="{x}" y="{y}" width="{cell}" height="{cell}" '
+                         f'rx="2" fill="{colors[value]}" stroke="{border}" stroke-width="0.6"/>')
+            if value in (4, 5):
+                label = "S" if value == 4 else "G"
+                text_color = "#052e16" if value == 4 else "#4c0519"
+                rects.append(f'<text x="{x + cell/2}" y="{y + cell*.69}" text-anchor="middle" '
+                             f'font-family="sans-serif" font-size="11" font-weight="700" fill="{text_color}">{label}</text>')
+    return (f'<div style="width:100%;overflow:auto;background:#080e18;padding:8px;border-radius:10px">'
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {board} {board}" '
+            f'role="img" aria-label="Pathfinding grid" style="width:100%;height:auto;max-height:75vh">'
+            f'{"".join(rects)}</svg></div>')
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +246,7 @@ def network_dijkstra(source, target, active_net):
                               "Router": f"{node} → {neighbor}",
                               "Cost": f"{weight:.2f} (total {candidate:.2f})"})
     path = []
-    if distances.get(target, float("inf")) < float("inf"):
+    if distances[target] < float("inf"):
         node = target
         while node is not None:
             path.append(node)
@@ -263,7 +270,7 @@ def network_bellman_ford(source, target, active_net):
     for _ in range(max(0, len(active_net) - 1)):
         changed = False
         for node, neighbors in active_net.items():
-            if distances.get(node, float("inf")) == float("inf"):
+            if distances[node] == float("inf"):
                 continue
             for neighbor, weight in neighbors.items():
                 candidate = distances[node] + weight
@@ -277,7 +284,7 @@ def network_bellman_ford(source, target, active_net):
         if not changed:
             break
     path = []
-    if distances.get(target, float("inf")) < float("inf"):
+    if distances[target] < float("inf"):
         node = target
         while node is not None:
             path.append(node)
@@ -285,19 +292,20 @@ def network_bellman_ford(source, target, active_net):
         path.reverse()
     reached = {node for node, cost in distances.items() if cost < float("inf")}
     table = [{"Router": node,
-              "Distance": "∞" if distances.get(node, float("inf")) == float("inf") else f"{distances[node]:.2f}",
-              "Next hop": parents.get(node) or "—",
+              "Distance": "∞" if distances[node] == float("inf") else f"{distances[node]:.2f}",
+              "Next hop": parents[node] or "—",
               "Status": "Reachable" if node in reached else "Unreachable"}
              for node in active_net]
     return {"source": source, "target": target, "distances": distances,
             "parents": parents, "visited": list(reached), "path": path,
-            "cost": distances.get(target, float("inf")), "table": table, "trace": trace}
+            "cost": distances[target], "table": table, "trace": trace}
 
 
 def draw_network(result, active_net):
-    fig, ax = plt.subplots(figsize=(10, 5.8), facecolor="#080e18")
-    ax.set_facecolor("#080e18")
+    width, height = 1000, 570
     route_edges = set(zip(result["path"], result["path"][1:]))
+    elements = ['<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">'
+                '<path d="M0,0 L0,6 L7,3 z" fill="#94a3b8"/></marker></defs>']
     for node, neighbors in NETWORK.items():
         x1, y1 = NODE_POS[node]
         for neighbor, base_weight in neighbors.items():
@@ -306,25 +314,27 @@ def draw_network(result, active_net):
             is_active = neighbor in active_net.get(node, {})
             weight = active_net.get(node, {}).get(neighbor, base_weight)
             color = "#00bceb" if hot else ("#334155" if is_active else "#64748b")
-            ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
-                        arrowprops={"arrowstyle": "->", "color": color,
-                                    "linestyle": "-" if is_active else ":",
-                                    "lw": 2.8 if hot else 1.1, "shrinkA": 18, "shrinkB": 18})
+            sx, sy = x1 * width, (1 - y1) * height
+            ex, ey = x2 * width, (1 - y2) * height
+            elements.append(f'<line x1="{sx}" y1="{sy}" x2="{ex}" y2="{ey}" '
+                            f'stroke="{color}" stroke-width="{3 if hot else 1.5}" '
+                            f'stroke-dasharray="{"none" if is_active else "4 5"}" marker-end="url(#arrow)"/>')
             label = (f"{weight:g}" if weight == base_weight else f"{weight:g} (5x)") if is_active else "FAILED"
             label_color = "#fbbf24" if weight == base_weight else ("#f43f5e" if is_active else "#94a3b8")
-            ax.text((x1 + x2) / 2, (y1 + y2) / 2 + .025, label,
-                    color=label_color, fontsize=8, ha="center",
-                    bbox={"facecolor": "#080e18", "edgecolor": "none", "pad": 1})
+            mx, my = (sx + ex) / 2, (sy + ey) / 2 - 5
+            elements.append(f'<text x="{mx}" y="{my}" text-anchor="middle" font-size="12" '
+                            f'font-family="sans-serif" fill="{label_color}" stroke="#080e18" '
+                            f'stroke-width="4" paint-order="stroke">{label}</text>')
     for node, (x, y) in NODE_POS.items():
         color = "#10b981" if node == result["source"] else "#f43f5e" if node == result["target"] else "#00bceb"
-        ax.scatter([x], [y], s=850, c="#0f172a", edgecolors=color, linewidths=2, zorder=3)
-        ax.text(x, y, node, color="white", fontsize=8, fontweight="bold",
-                ha="center", va="center", zorder=4)
-    ax.set_xlim(0, 1.03)
-    ax.set_ylim(.05, .95)
-    ax.axis("off")
-    fig.tight_layout(pad=.5)
-    return fig
+        cx, cy = x * width, (1 - y) * height
+        elements.append(f'<circle cx="{cx}" cy="{cy}" r="27" fill="#0f172a" stroke="{color}" stroke-width="3"/>')
+        elements.append(f'<text x="{cx}" y="{cy + 4}" text-anchor="middle" font-size="12" '
+                        f'font-family="sans-serif" font-weight="700" fill="white">{node}</text>')
+    return (f'<div style="width:100%;overflow:auto;background:#080e18;padding:8px;border-radius:10px">'
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+            f'role="img" aria-label="Weighted network topology" style="width:100%;height:auto">'
+            f'{"".join(elements)}</svg></div>')
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +352,7 @@ padding:.75rem; border-radius:.7rem; }
 """, unsafe_allow_html=True)
 st.title("🧭 Network Algorithms Lab")
 st.caption("CS402 · ROUTING PROTOCOLS & PATHFINDING")
-grid_tab, network_tab = st.tabs(["▦ Grid Pathfinding", "⌘ Cisco Topology & Routing"])
+grid_tab, network_tab = st.tabs(["▦  Grid Pathfinding", "⌘  Cisco Topology Dijkstra"])
 
 with st.sidebar:
     st.header("Grid simulator")
@@ -409,26 +419,32 @@ with grid_tab:
         frames = bfs_search_frames(size, walls, start, goal, diagonal)
         final_frame = frames[-1] if frames else {}
         for frame in frames:
-            placeholder.pyplot(draw_grid(size, walls, None, start, goal,
-                                         visited=frame["visited"],
-                                         frontier=frame["frontier"],
-                                         current=frame["current"]),
-                               use_container_width=True)
+            st.components.v1.html(
+                draw_grid(size, walls, None, start, goal,
+                          visited=frame["visited"], frontier=frame["frontier"],
+                          current=frame["current"]),
+                height=min(820, size * 19 + 55), scrolling=True,
+            )
             info.caption(f"Expanded {len(frame['visited'])} cells · current frontier {len(frame['frontier'])} · peak queue size {frame['max_queue']}")
             if animate_delay:
                 sleep(animate_delay)
         if final_frame.get("path"):
-            placeholder.pyplot(draw_grid(size, walls,
-                                         {"visited": final_frame["visited"], "path": final_frame["path"]},
-                                         start, goal), use_container_width=True)
+            st.components.v1.html(
+                draw_grid(size, walls,
+                          {"visited": final_frame["visited"], "path": final_frame["path"]},
+                          start, goal),
+                height=min(820, size * 19 + 55), scrolling=True,
+            )
             st.success(f"BFS found a route in {len(final_frame['path']) - 1} moves; peak queue size {final_frame['max_queue']}.")
         else:
             st.warning(f"No route found. BFS peak queue size: {final_frame.get('max_queue', 0)}.")
 
     visual, summary = st.columns([3, 1])
     with visual:
-        st.pyplot(draw_grid(size, walls, st.session_state.search_result, start, goal),
-                  use_container_width=True)
+        st.components.v1.html(
+            draw_grid(size, walls, st.session_state.search_result, start, goal),
+            height=min(820, size * 19 + 55), scrolling=True,
+        )
     with summary:
         st.markdown("#### Search telemetry")
         result = st.session_state.search_result
@@ -512,7 +528,7 @@ with network_tab:
     network_result = st.session_state.network_result
     graph_col, table_col = st.columns([1.8, 1])
     with graph_col:
-        st.pyplot(draw_network(network_result, active_net), use_container_width=True)
+        st.components.v1.html(draw_network(network_result, active_net), height=600, scrolling=True)
     with table_col:
         st.markdown("#### Routing table")
         st.dataframe(network_result["table"], hide_index=True, use_container_width=True)
